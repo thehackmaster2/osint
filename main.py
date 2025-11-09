@@ -1,87 +1,336 @@
-import os
-import logging
-import requests
-import whois
-import psutil
-import hashlib
-import json
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
-from urllib.parse import urlparse
-import socket
-import ssl
-import datetime
-from dotenv import load_dotenv
+                    """.strip()
+                else:
+                    info_text = f"""
+🏓 *Ping Results for {host}*
 
-# Load environment variables
-load_dotenv()
+*Status:* ✅ Online
+*Response:* Host is reachable
+                    """.strip()
+            else:
+                info_text = f"""
+🏓 *Ping Results for {host}*
 
-# Configure logging
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
-logger = logging.getLogger(__name__)
+*Status:* ❌ Offline or blocked
+*Error:* Host is not reachable
+*Details:* {result.stderr if result.stderr else 'Request timeout or host unreachable'}
+                """.strip()
+            
+            # Edit the original message with results
+            await context.bot.edit_message_text(
+                chat_id=update.message.chat_id,
+                message_id=status_message.message_id,
+                text=info_text,
+                parse_mode='Markdown'
+            )
+            
+        except subprocess.TimeoutExpired:
+            await update.message.reply_text(f"❌ Ping timeout for {host}. Host may be down or blocking ICMP requests.")
+        except Exception as e:
+            logger.error(f"Error pinging host: {e}")
+            await update.message.reply_text(f"❌ Error pinging {host}: {str(e)}")
 
-# Get bot token from environment variable for security
-BOT_TOKEN = os.getenv('BOT_TOKEN', "8388337639:AAHurATpzwNNcuPjUg1MxfExIKhWwo64H1I")
+    async def nmap_scan(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Perform basic nmap scan (ports 1-1000)."""
+        if not context.args:
+            await update.message.reply_text("Please provide an IP address. Usage: /nmap 192.168.1.1")
+            return
 
-class CyberSecurityBot:
-    def __init__(self):
-        self.virustotal_api_key = os.getenv('VIRUSTOTAL_API_KEY', '853f39d100614a1865a16de21fd1f2cc5b47b25556c410c8740fb941796edf95')
-        self.abuseipdb_api_key = os.getenv('ABUSEIPDB_API_KEY', 'facd3a7e8f80004423ef6b70888651803b76857520a0e1b76008de7e1b6f37221689a13ef41a5bef')
+        target = context.args[0]
         
-    async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Send welcome message when the command /start is issued."""
-        welcome_text = """
-🔒 *Cyber Security Bot* 🔒
+        try:
+            # Validate IP/host
+            socket.gethostbyname(target)
+            
+            status_message = await update.message.reply_text(f"🔍 Scanning {target} (ports 1-1000)...")
+            
+            # Perform nmap scan
+            self.nm.scan(target, '1-1000', arguments='-T4 --max-retries 2 --host-timeout 120s')
+            
+            if target in self.nm.all_hosts():
+                host_info = self.nm[target]
+                
+                # Get open ports
+                open_ports = []
+                for proto in host_info.all_protocols():
+                    ports = host_info[proto].keys()
+                    for port in ports:
+                        state = host_info[proto][port]['state']
+                        if state == 'open':
+                            service = host_info[proto][port].get('name', 'unknown')
+                            open_ports.append((port, proto, service))
+                
+                if open_ports:
+                    ports_text = "\n".join([f"• Port {port}/{proto} - {service}" for port, proto, service in open_ports[:10]])  # Limit to first 10
+                    if len(open_ports) > 10:
+                        ports_text += f"\n• ... and {len(open_ports) - 10} more ports"
+                else:
+                    ports_text = "• No open ports found"
+                
+                info_text = f"""
+🔍 *Nmap Scan Results for {target}*
 
-*Available Commands:*
-/start - Show this welcome message
-/help - Show available commands
-/ipinfo <IP> - Get information about an IP address
-/abusecheck <IP> - Check IP against AbuseIPDB
-/dnslookup <domain> - Perform DNS lookup
-/whois <domain> - Get WHOIS information
-/checkhash <hash> - Check file hash against VirusTotal
-/urlinfo <URL> - Analyze a URL for safety
-/passwordstrength <password> - Check password strength
-/scanurl <URL> - Scan URL with VirusTotal
+*Scan Type:* Basic (ports 1-1000)
+*Host Status:* {host_info.state()}
+*Open Ports:*
+{ports_text}
 
-*Examples:*
-/ipinfo 8.8.8.8
-/abusecheck 192.168.1.1
-/dnslookup google.com
-/whois example.com
-/checkhash 44d88612fea8a8f36de82e1278abb02f
-/scanurl https://example.com
-        """
-        await update.message.reply_text(welcome_text, parse_mode='Markdown')
+*Scan Info:*
+• Protocol: TCP
+• Port Range: 1-1000
+• Total Ports Scanned: 1000
+                """.strip()
+            else:
+                info_text = f"""
+🔍 *Nmap Scan Results for {target}*
 
-    async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Send help message when the command /help is issued."""
-        help_text = """
-🤖 *Cyber Security Bot Help* 🤖
+*Status:* ❌ Host not found or not responding
+*Note:* The host may be down or blocking scan requests
+                """.strip()
+            
+            await context.bot.edit_message_text(
+                chat_id=update.message.chat_id,
+                message_id=status_message.message_id,
+                text=info_text,
+                parse_mode='Markdown'
+            )
+            
+        except Exception as e:
+            logger.error(f"Error in nmap scan: {e}")
+            await update.message.reply_text(f"❌ Error scanning {target}: {str(e)}")
 
-*IP & Domain Analysis:*
-/ipinfo <IP> - Get IP geolocation information
-/abusecheck <IP> - Check IP reputation with AbuseIPDB
-/dnslookup <domain> - Perform DNS record lookup
-/whois <domain> - Get domain registration information
+    async def nmap_full_scan(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Perform full nmap scan (ports 1-65535)."""
+        if not context.args:
+            await update.message.reply_text("Please provide an IP address. Usage: /nmapfull 192.168.1.1")
+            return
 
-*File Security:*
-/checkhash <hash> - Check MD5, SHA1, or SHA256 hash with VirusTotal
+        target = context.args[0]
+        
+        try:
+            # Warning for full scan
+            warning_msg = await update.message.reply_text(
+                "⚠️ *Full port scan initiated*\n"
+                "This may take 5-15 minutes...\n"
+                "Scanning all 65535 ports...",
+                parse_mode='Markdown'
+            )
+            
+            # Validate IP/host
+            socket.gethostbyname(target)
+            
+            # Perform nmap scan with longer timeout
+            self.nm.scan(target, '1-65535', arguments='-T4 --max-retries 1 --host-timeout 600s')
+            
+            if target in self.nm.all_hosts():
+                host_info = self.nm[target]
+                
+                # Get open ports
+                open_ports = []
+                for proto in host_info.all_protocols():
+                    ports = host_info[proto].keys()
+                    for port in ports:
+                        state = host_info[proto][port]['state']
+                        if state == 'open':
+                            service = host_info[proto][port].get('name', 'unknown')
+                            product = host_info[proto][port].get('product', '')
+                            version = host_info[proto][port].get('version', '')
+                            open_ports.append((port, proto, service, product, version))
+                
+                if open_ports:
+                    ports_text = "\n".join([f"• Port {port}/{proto} - {service} {product} {version}".strip() 
+                                          for port, proto, service, product, version in open_ports[:15]])  # Limit to first 15
+                    if len(open_ports) > 15:
+                        ports_text += f"\n• ... and {len(open_ports) - 15} more ports"
+                else:
+                    ports_text = "• No open ports found"
+                
+                info_text = f"""
+🔍 *Full Nmap Scan Results for {target}*
 
-*Web Security:*
-/urlinfo <URL> - Basic URL safety analysis
-/scanurl <URL> - Deep URL scan with VirusTotal
+*Scan Type:* Comprehensive (all ports)
+*Host Status:* {host_info.state()}
+*Open Ports:*
+{ports_text}
 
-*Utilities:*
-/passwordstrength <password> - Check password strength
+*Scan Info:*
+• Protocol: TCP
+• Port Range: 1-65535
+• Total Ports Scanned: 65535
+• Scan Duration: Several minutes
+                """.strip()
+            else:
+                info_text = f"""
+🔍 *Full Nmap Scan Results for {target}*
 
-*Privacy Note:* I don't store your queries or personal information.
-        """
-        await update.message.reply_text(help_text, parse_mode='Markdown')
+*Status:* ❌ Host not found or not responding
+*Note:* The host may be down or blocking scan requests
+                """.strip()
+            
+            await context.bot.edit_message_text(
+                chat_id=update.message.chat_id,
+                message_id=warning_msg.message_id,
+                text=info_text,
+                parse_mode='Markdown'
+            )
+            
+        except Exception as e:
+            logger.error(f"Error in full nmap scan: {e}")
+            await update.message.reply_text(f"❌ Error scanning {target}: {str(e)}")
+
+    async def scan_file(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle file uploads for virus scanning."""
+        if not update.message.document and not update.message.photo:
+            await update.message.reply_text(
+                "📎 Please upload a file or image for scanning.\n\n"
+                "*Supported files:*\n"
+                "• Documents (PDF, DOC, DOCX)\n" 
+                "• Images (JPG, PNG, GIF)\n"
+                "• Archives (ZIP, RAR)\n"
+                "• Executables (EXE, MSI)\n"
+                "• And many more...\n\n"
+                "*How to use:*\n"
+                "1. Click the 📎 attachment icon\n"
+                "2. Select your file\n"
+                "3. Send it to me for analysis",
+                parse_mode='Markdown'
+            )
+            return
+        
+        try:
+            status_message = await update.message.reply_text("🔄 Downloading and analyzing file...")
+            
+            # Get file information
+            if update.message.document:
+                file = await update.message.document.get_file()
+                file_name = update.message.document.file_name
+                file_size = update.message.document.file_size
+            elif update.message.photo:
+                # Get the highest quality photo
+                file = await update.message.photo[-1].get_file()
+                file_name = "image.jpg"
+                file_size = "Unknown"
+            
+            # Check file size (VirusTotal limit is 32MB for public API)
+            if file_size and file_size > 32 * 1024 * 1024:
+                await context.bot.edit_message_text(
+                    chat_id=update.message.chat_id,
+                    message_id=status_message.message_id,
+                    text="❌ File too large. Maximum size is 32MB for VirusTotal analysis."
+                )
+                return
+            
+            # Download file to temporary location
+            with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+                await file.download_to_drive(temp_file.name)
+                
+                # Calculate file hash
+                with open(temp_file.name, 'rb') as f:
+                    file_content = f.read()
+                    file_hash = hashlib.sha256(file_content).hexdigest()
+                
+                # Upload to VirusTotal for analysis
+                vt_url = "https://www.virustotal.com/vtapi/v2/file/scan"
+                files = {'file': (file_name, file_content)}
+                params = {'apikey': self.virustotal_api_key}
+                
+                upload_response = requests.post(vt_url, files=files, params=params)
+                
+                if upload_response.status_code == 200:
+                    upload_result = upload_response.json()
+                    
+                    # Now get the analysis report
+                    report_url = "https://www.virustotal.com/vtapi/v2/file/report"
+                    report_params = {
+                        'apikey': self.virustotal_api_key,
+                        'resource': file_hash
+                    }
+                    
+                    # Wait a moment for analysis to complete, then get report
+                    import time
+                    time.sleep(2)
+                    
+                    report_response = requests.get(report_url, params=report_params)
+                    
+                    if report_response.status_code == 200:
+                        report = report_response.json()
+                        
+                        if report['response_code'] == 1:
+                            positives = report['positives']
+                            total = report['total']
+                            scan_date = report.get('scan_date', 'Unknown')
+                            
+                            # Determine threat level
+                            if positives == 0:
+                                threat_level = "✅ CLEAN"
+                                emoji = "✅"
+                            elif positives < 5:
+                                threat_level = "⚠️ SUSPICIOUS"
+                                emoji = "⚠️"
+                            else:
+                                threat_level = "❌ MALICIOUS"
+                                emoji = "❌"
+                            
+                            # Get some scanner results
+                            scans = report.get('scans', {})
+                            detections = []
+                            for scanner, result in list(scans.items())[:5]:  # Show first 5 detections
+                                if result.get('detected', False):
+                                    detections.append(f"• {scanner}: {result.get('result', 'Malicious')}")
+                            
+                            detections_text = "\n".join(detections) if detections else "• No specific detections listed"
+                            
+                            info_text = f"""
+🛡️ *VirusTotal File Analysis*
+
+*File:* {file_name}
+*Size:* {file_size} bytes
+*SHA256:* `{file_hash}`
+*Scan Date:* {scan_date}
+
+*Results:* {positives}/{total} engines detected
+*Status:* {threat_level}
+
+*Detection Ratio:* {positives}/{total} ({positives/total*100:.1f}%)
+{emoji} *Verdict:* {threat_level.split(' ')[1]}
+
+*Top Detections:*
+{detections_text}
+
+*Permalink:* {report.get('permalink', 'Not available')}
+                            """.strip()
+                        else:
+                            info_text = f"""
+🛡️ *VirusTotal File Analysis*
+
+*File:* {file_name}
+*Size:* {file_size} bytes
+*SHA256:* `{file_hash}`
+
+*Status:* 📊 Analysis in progress
+*Message:* File uploaded successfully. Analysis may take a few minutes.
+*Note:* Use /checkhash {file_hash} later to check results.
+                            """.strip()
+                    else:
+                        info_text = "❌ Error retrieving file analysis report."
+                else:
+                    info_text = "❌ Error uploading file to VirusTotal."
+            
+            # Clean up temporary file
+            os.unlink(temp_file.name)
+            
+            await context.bot.edit_message_text(
+                chat_id=update.message.chat_id,
+                message_id=status_message.message_id,
+                text=info_text,
+                parse_mode='Markdown'
+            )
+            
+        except Exception as e:
+            logger.error(f"Error scanning file: {e}")
+            await update.message.reply_text(f"❌ Error analyzing file: {str(e)}")
+
+    # Keep all your existing methods (ipinfo, abuse_check, dnslookup, whois_lookup, check_hash, scan_url, url_info, password_strength, handle_message)
+    # ... [Include all the previous methods here without changes] ...
 
     async def ipinfo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Get information about an IP address."""
@@ -577,6 +826,9 @@ def main():
     application.add_handler(CommandHandler("help", bot.help_command))
     application.add_handler(CommandHandler("ipinfo", bot.ipinfo))
     application.add_handler(CommandHandler("abusecheck", bot.abuse_check))
+    application.add_handler(CommandHandler("ping", bot.ping))
+    application.add_handler(CommandHandler("nmap", bot.nmap_scan))
+    application.add_handler(CommandHandler("nmapfull", bot.nmap_full_scan))
     application.add_handler(CommandHandler("dnslookup", bot.dnslookup))
     application.add_handler(CommandHandler("whois", bot.whois_lookup))
     application.add_handler(CommandHandler("checkhash", bot.check_hash))
@@ -584,13 +836,17 @@ def main():
     application.add_handler(CommandHandler("scanurl", bot.scan_url))
     application.add_handler(CommandHandler("passwordstrength", bot.password_strength))
     
+    # Add file handler for document and photo uploads
+    application.add_handler(MessageHandler(filters.Document.ALL, bot.scan_file))
+    application.add_handler(MessageHandler(filters.PHOTO, bot.scan_file))
+    
     # Add message handler for non-command messages
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_message))
     
     # Start the Bot
     logger.info("🤖 Cyber Security Bot is starting...")
-    print("🤖 Bot is running with full API integration!")
-    print("🔧 Features enabled: VirusTotal + AbuseIPDB")
+    print("🤖 Bot is running with full features!")
+    print("🔧 Features enabled: VirusTotal + AbuseIPDB + Nmap + File Scanning")
     application.run_polling()
 
 if __name__ == '__main__':
