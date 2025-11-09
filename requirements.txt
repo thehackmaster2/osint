@@ -5,3 +5,4 @@ urllib3==2.2.2
 psutil==5.9.6
 cryptography==42.0.5
 python-dotenv==1.0.0
+python-nmap==0.7.1
