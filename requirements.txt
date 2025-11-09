@@ -1,0 +1,7 @@
+python-telegram-bot==21.7
+requests==2.31.0
+python-whois==0.8.0
+urllib3==2.2.2
+psutil==5.9.6
+cryptography==42.0.5
+python-dotenv==1.0.0
